@@ -1,8 +1,5 @@
 import { expect, assert } from "chai";
 import { ethers } from "hardhat";
-import {
-  isCallTrace,
-} from "hardhat/internal/hardhat-network/stack-traces/message-trace";
 import { BigNumber, Contract, Signer} from "ethers";
 
 describe("ERC998TopDownComposableEnumerable", function () {
