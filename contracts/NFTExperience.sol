@@ -7,47 +7,11 @@ import "@openzeppelin/contracts/token/ERC721/extensions/ERC721URIStorage.sol";
 import "@openzeppelin/contracts/token/ERC721/extensions/ERC721Burnable.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/Counters.sol";
-
-
 import "hardhat/console.sol";
-
-
-interface IERC998ERC721BottomUp {
-    event TransferToParent(address indexed _toContract, uint256 indexed _toTokenId, uint256 _tokenId);
-    event TransferFromParent(address indexed _fromContract, uint256 indexed _fromTokenId, uint256 _tokenId);
-
-
-    function rootOwnerOf(uint256 _tokenId) external view returns (bytes32 rootOwner);
-
-    /**
-    * The tokenOwnerOf function gets the owner of the _tokenId which can be a user address or another ERC721 token.
-    * The tokenOwner address return value can be either a user address or an ERC721 contract address.
-    * If the tokenOwner address is a user address then parentTokenId will be 0 and should not be used or considered.
-    * If tokenOwner address is a user address then isParent is false, otherwise isChild is true, which means that
-    * tokenOwner is an ERC721 contract address and _tokenId is a child of tokenOwner and parentTokenId.
-    */
-    function tokenOwnerOf(uint256 _tokenId) external view returns (bytes32 tokenOwner, uint256 parentTokenId, bool isParent);
-
-    // Transfers _tokenId as a child to _toContract and _toTokenId
-    function transferToParent(address _from, address _toContract, uint256 _toTokenId, uint256 _tokenId, bytes memory _data) external;
-    // Transfers _tokenId from a parent ERC721 token to a user address.
-    function transferFromParent(address _fromContract, uint256 _fromTokenId, address _to, uint256 _tokenId, bytes memory _data) external;
-    // Transfers _tokenId from a parent ERC721 token to a parent ERC721 token.
-    function transferAsChild(address _fromContract, uint256 _fromTokenId, address _toContract, uint256 _toTokenId, uint256 _tokenId, bytes memory _data) external;
-
-}
-
-/*
-interface ERC998ERC721BottomUpNotifications {
-    function onERC998Removed(address _operator, uint256 _parentTokenId, uint256 _childTokenId, bytes _data) external;
-}
-*/
-interface IERC998ERC721BottomUpEnumerable {
-    function totalChildTokens(address _parentContract, uint256 _parentTokenId) external view returns (uint256);
-
-    function childTokenByIndex(address _parentContract, uint256 _parentTokenId, uint256 _index) external view returns (uint256);
-}
-
+/**
+ * this contract will mint a child NFT to any Parent ERC721.  this NFT is soulbound to the whichever Token it is minted to
+ * and assigns a level to that NFT according to how much experience the child NFT contains.
+ */
 
 contract NFTExperience is
     ERC721,
@@ -55,9 +19,14 @@ contract NFTExperience is
     ERC721URIStorage,
     ERC721Burnable,
     Ownable,
-    IERC998ERC721BottomUp,
-    IERC998ERC721BottomUpEnumerable
+    IERC721Receiver
 {
+
+    event ChildTransferedToParent(
+        address indexed _toContract,
+        uint256 indexed _toTokenId,
+        uint256 _tokenId
+    );
     struct TokenOwner {
         address tokenOwner;
         uint256 parentTokenId;
@@ -93,13 +62,24 @@ contract NFTExperience is
 
     constructor() ERC721("CharacterSheet", "CHRS") {}
 
-    function createCharacterSheet(address _tokenContractAddress,uint256 _tokenId, string memory uri) public onlyOwner {
+    function createCharacterSheet(
+        address _tokenContractAddress,
+        uint256 _toTokenId,
+        string memory uri
+    ) public onlyOwner {
         //TODO make mintable to an erc721 token
         uint256 tokenId = _tokenIdCounter.current();
         _tokenIdCounter.increment();
         _safeMint(address(this), tokenId);
         _setTokenURI(tokenId, uri);
-        transferAsChild(msg.sender, tokenId)
+        this.transferToParent(
+            address(this),
+            _tokenContractAddress,
+            _toTokenId,
+            tokenId,
+            ""
+        );
+        emit ChildTransferedToParent(_tokenContractAddress, _toTokenId, tokenId);
     }
 
     // The following functions are overrides required by Solidity.
@@ -112,45 +92,39 @@ contract NFTExperience is
         super._beforeTokenTransfer(from, to, tokenId);
     }
 
-    function _burn(uint256 tokenId)
-        internal
-        override(ERC721, ERC721URIStorage)
-    {
+    function _burn(
+        uint256 tokenId
+    ) internal override(ERC721, ERC721URIStorage) {
         super._burn(tokenId);
     }
 
-    function tokenURI(uint256 tokenId)
-        public
-        view
-        override(ERC721, ERC721URIStorage)
-        returns (string memory)
-    {
+    function tokenURI(
+        uint256 tokenId
+    ) public view override(ERC721, ERC721URIStorage) returns (string memory) {
         return super.tokenURI(tokenId);
     }
 
-    function supportsInterface(bytes4 interfaceId)
-        public
-        view
-        override(ERC721, ERC721Enumerable)
-        returns (bool)
-    {
+    function supportsInterface(
+        bytes4 interfaceId
+    ) public view override(ERC721, ERC721Enumerable) returns (bool) {
         return super.supportsInterface(interfaceId);
     }
 
     // erc998 functions
-      function isContract(address _addr) internal view returns (bool) {
+    function isContract(address _addr) internal view returns (bool) {
         uint256 size;
-        assembly {size := extcodesize(_addr)}
+        assembly {
+            size := extcodesize(_addr)
+        }
         return size > 0;
     }
-    function _tokenOwnerOf(uint256 _tokenId)
+
+    function _tokenOwnerOf(
+        uint256 _tokenId
+    )
         internal
         view
-        returns (
-            address tokenOwner,
-            uint256 parentTokenId,
-            bool isParent
-        )
+        returns (address tokenOwner, uint256 parentTokenId, bool isParent)
     {
         tokenOwner = tokenIdToTokenOwner[_tokenId].tokenOwner;
         require(tokenOwner != address(0));
@@ -164,14 +138,12 @@ contract NFTExperience is
         return (tokenOwner, parentTokenId, isParent);
     }
 
-    function tokenOwnerOf(uint256 _tokenId)
+    function tokenOwnerOf(
+        uint256 _tokenId
+    )
         external
         view
-        returns (
-            bytes32 tokenOwner,
-            uint256 parentTokenId,
-            bool isParent
-        )
+        returns (bytes32 tokenOwner, uint256 parentTokenId, bool isParent)
     {
         address tokenOwnerAddress = tokenIdToTokenOwner[_tokenId].tokenOwner;
         require(tokenOwnerAddress != address(0));
@@ -189,11 +161,9 @@ contract NFTExperience is
         );
     }
 
-    function rootOwnerOf(uint256 _tokenId)
-        public
-        view
-        returns (bytes32 rootOwner)
-    {
+    function rootOwnerOf(
+        uint256 _tokenId
+    ) public view returns (bytes32 rootOwner) {
         address rootOwnerAddress = tokenIdToTokenOwner[_tokenId].tokenOwner;
         require(rootOwnerAddress != address(0));
         uint256 parentTokenId = tokenIdToTokenOwner[_tokenId].parentTokenId;
@@ -333,12 +303,9 @@ contract NFTExperience is
      * This enables the owner of the top-most parent of a tree of composables to call any method on child composables.
      */
     // returns the root owner at the top of the tree of composables
-    function ownerOf(uint256 _tokenId)
-        public
-        view
-        override(ERC721, IERC721)
-        returns (address)
-    {
+    function ownerOf(
+        uint256 _tokenId
+    ) public view override(ERC721, IERC721) returns (address) {
         address tokenOwner = tokenIdToTokenOwner[_tokenId].tokenOwner;
         require(tokenOwner != address(0));
         return tokenOwner;
@@ -349,31 +316,46 @@ contract NFTExperience is
         b = bytes32(x);
     }
 
-    function addressToBytes32(address _address)
-        public
-        pure
-        returns (bytes32 _bytes)
-    {
+    function addressToBytes32(
+        address _address
+    ) public pure returns (bytes32 _bytes) {
         _bytes = bytes32(uint256(uint160(_address)));
     }
-
-        function removeChild(address _fromContract, uint256 _fromTokenId, uint256 _tokenId) internal {
+    function bytes32ToAddress (bytes32 _input) public pure returns(address){
+        return address(uint160(uint256(_input)));
+    }
+    function removeChild(
+        address _fromContract,
+        uint256 _fromTokenId,
+        uint256 _tokenId
+    ) internal {
         uint256 childTokenIndex = tokenIdToChildTokenIdsIndex[_tokenId];
-        uint256 lastChildTokenIndex = parentToChildTokenIds[_fromContract][_fromTokenId].length - 1;
-        uint256 lastChildTokenId = parentToChildTokenIds[_fromContract][_fromTokenId][lastChildTokenIndex];
+        uint256 lastChildTokenIndex = parentToChildTokenIds[_fromContract][
+            _fromTokenId
+        ].length - 1;
+        uint256 lastChildTokenId = parentToChildTokenIds[_fromContract][
+            _fromTokenId
+        ][lastChildTokenIndex];
 
         if (_tokenId != lastChildTokenId) {
-            parentToChildTokenIds[_fromContract][_fromTokenId][childTokenIndex] = lastChildTokenId;
+            parentToChildTokenIds[_fromContract][_fromTokenId][
+                childTokenIndex
+            ] = lastChildTokenId;
             tokenIdToChildTokenIdsIndex[lastChildTokenId] = childTokenIndex;
         }
-        parentToChildTokenIds[_fromContract][_fromTokenId].length--;
+        parentToChildTokenIds[_fromContract][_fromTokenId].pop;
     }
 
-     function authenticateAndClearApproval(uint256 _tokenId) private {
-        address rootOwner = address(rootOwnerOf(_tokenId));
-        address approvedAddress = rootOwnerAndTokenIdToApprovedAddress[rootOwner][_tokenId];
-        require(rootOwner == msg.sender || tokenOwnerToOperators[rootOwner][msg.sender] ||
-        approvedAddress == msg.sender);
+    function authenticateAndClearApproval(uint256 _tokenId) private {
+        address rootOwner = bytes32ToAddress(rootOwnerOf(_tokenId));
+        address approvedAddress = rootOwnerAndTokenIdToApprovedAddress[
+            rootOwner
+        ][_tokenId];
+        require(
+            rootOwner == msg.sender ||
+                tokenOwnerToOperators[rootOwner][msg.sender] ||
+                approvedAddress == msg.sender
+        );
 
         // clear approval
         if (approvedAddress != address(0)) {
@@ -382,27 +364,63 @@ contract NFTExperience is
         }
     }
 
-    function transferToParent(address _from, address _toContract, uint256 _toTokenId, uint256 _tokenId, bytes _data) external {
+    /**
+     * transfers a child nft from this contract to a parent nft
+     * @param _from: address sending the child composable
+     * @param _toContract: contract of parent nft the child composable
+     * @param _toTokenId: token id of parent nft
+     * @param _tokenId: child being transfered
+     * @param _data: optional data
+     */
+    function transferToParent(
+        address _from,
+        address _toContract,
+        uint256 _toTokenId,
+        uint256 _tokenId,
+        bytes calldata _data
+    ) external {
         require(_from != address(0));
         require(tokenIdToTokenOwner[_tokenId].tokenOwner == _from);
         require(_toContract != address(0));
-        require(tokenIdToTokenOwner[_tokenId].parentTokenId == 0, "Cannot transfer from address when owned by a token.");
-        address approvedAddress = rootOwnerAndTokenIdToApprovedAddress[_from][_tokenId];
-        if(msg.sender != _from) {
+        require(
+            tokenIdToTokenOwner[_tokenId].parentTokenId == 0,
+            "Cannot transfer from address when owned by a token."
+        );
+        address approvedAddress = rootOwnerAndTokenIdToApprovedAddress[_from][
+            _tokenId
+        ];
+        if (msg.sender != _from) {
             bytes32 rootOwner;
             bool callSuccess;
             // 0xed81cdda == rootOwnerOfChild(address,uint256)
-            bytes memory _calldata = abi.encodeWithSelector(0xed81cdda, address(this), _tokenId);
+            bytes memory _calldata = abi.encodeWithSelector(
+                0xed81cdda,
+                address(this),
+                _tokenId
+            );
             assembly {
-                callSuccess := staticcall(gas(), _from, add(_calldata, 0x20), mload(_calldata), _calldata, 0x20)
+                callSuccess := staticcall(
+                    gas(),
+                    _from,
+                    add(_calldata, 0x20),
+                    mload(_calldata),
+                    _calldata,
+                    0x20
+                )
                 if callSuccess {
                     rootOwner := mload(_calldata)
                 }
             }
-            if(callSuccess == true) {
-                require(rootOwner >> 224 != ERC998_MAGIC_VALUE, "Token is child of other top down composable");
+            if (callSuccess == true) {
+                require(
+                    rootOwner >> 224 != ERC998_MAGIC_VALUE,
+                    "Token is child of other top down composable"
+                );
             }
-            require(tokenOwnerToOperators[_from][msg.sender] || approvedAddress == msg.sender);
+            require(
+                tokenOwnerToOperators[_from][msg.sender] ||
+                    approvedAddress == msg.sender
+            );
         }
 
         // clear approval
@@ -417,67 +435,55 @@ contract NFTExperience is
             tokenOwnerToTokenCount[_from]--;
             tokenOwnerToTokenCount[_toContract]++;
         }
-        TokenOwner memory parentToken = TokenOwner(_toContract, _toTokenId.add(1));
+        TokenOwner memory parentToken = TokenOwner(
+            _toContract,
+            _toTokenId++
+        );
         tokenIdToTokenOwner[_tokenId] = parentToken;
         uint256 index = parentToChildTokenIds[_toContract][_toTokenId].length;
         parentToChildTokenIds[_toContract][_toTokenId].push(_tokenId);
         tokenIdToChildTokenIdsIndex[_tokenId] = index;
 
-        require(ERC721(_toContract).ownerOf(_toTokenId) != address(0), "_toTokenId does not exist");
+        require(
+            ERC721(_toContract).ownerOf(_toTokenId) != address(0),
+            "_toTokenId does not exist"
+        );
 
         emit Transfer(_from, _toContract, _tokenId);
-        emit TransferToParent(_toContract, _toTokenId, _tokenId);
-    }
-  function transferFromParent(address _fromContract, uint256 _fromTokenId, address _to, uint256 _tokenId, bytes _data) external {
-        require(tokenIdToTokenOwner[_tokenId].tokenOwner == _fromContract);
-        require(_to != address(0));
-        uint256 parentTokenId = tokenIdToTokenOwner[_tokenId].parentTokenId;
-        require(parentTokenId != 0, "Token does not have a parent token.");
-        require(parentTokenId - 1 == _fromTokenId);
-        authenticateAndClearApproval(_tokenId);
-
-        // remove and transfer token
-        if (_fromContract != _to) {
-            assert(tokenOwnerToTokenCount[_fromContract] > 0);
-            tokenOwnerToTokenCount[_fromContract]--;
-            tokenOwnerToTokenCount[_to]++;
-        }
-
-        tokenIdToTokenOwner[_tokenId].tokenOwner = _to;
-        tokenIdToTokenOwner[_tokenId].parentTokenId = 0;
-
-        removeChild(_fromContract, _fromTokenId, _tokenId);
-        delete tokenIdToChildTokenIdsIndex[_tokenId];
-
-        if (isContract(_to)) {
-            bytes4 retval = IERC721Receiver(_to).onERC721Received(msg.sender, _fromContract, _tokenId, _data);
-            require(retval == IERC721Receiver.onERC721Received.selector);
-        }
-
-        emit Transfer(_fromContract, _to, _tokenId);
-        emit TransferFromParent(_fromContract, _fromTokenId, _tokenId);
-
+        emit ChildTransferedToParent(_toContract, _toTokenId, _tokenId);
     }
 
-/**
- * @dev transfers an nft as child to another nft
- * @param address _fromContract: contract that currently owns the nft that owns the nft being transfered.
- * @param uint256 _fromTokenId: the token id of the token that owns the child nft
- * @param address _toContract: the contract that child nft is being tranfered to
- * @param uint256 _toTokenId: the token id of the nft the child nft is being transfered to.
- * @param uint256 _tokenId: the token ID of the child nft
- * @param bytes _data data:
- */
-function transferAsChild(address _fromContract, uint256 _fromTokenId, address _toContract, uint256 _toTokenId, uint256 _tokenId, bytes _data) external {
+    /**
+     * @dev transfers a child nft as child from one nft to another nft
+     * @param _fromContract: contract that currently owns the nft that owns the nft being transfered.
+     * @param _fromTokenId: the token id of the token that owns the child nft
+     * @param _toContract: the contract that child nft is being tranfered to
+     * @param _toTokenId: the token id of the nft the child nft is being transfered to.
+     * @param _tokenId: the token ID of the child nft
+     * @param _data data: optional data
+     */
+    function transferAsChild(
+        address _fromContract,
+        uint256 _fromTokenId,
+        address _toContract,
+        uint256 _toTokenId,
+        uint256 _tokenId,
+        bytes calldata _data
+    ) external {
         require(tokenIdToTokenOwner[_tokenId].tokenOwner == _fromContract);
         require(_toContract != address(0));
         uint256 parentTokenId = tokenIdToTokenOwner[_tokenId].parentTokenId;
         require(parentTokenId > 0, "No parent token to transfer from.");
         require(parentTokenId - 1 == _fromTokenId);
-        address rootOwner = address(rootOwnerOf(_tokenId));
-        address approvedAddress = rootOwnerAndTokenIdToApprovedAddress[rootOwner][_tokenId];
-        require(rootOwner == msg.sender || tokenOwnerToOperators[rootOwner][msg.sender] ||
-        approvedAddress == msg.sender);
+        address rootOwner = bytes32ToAddress(rootOwnerOf(_tokenId));
+        address approvedAddress = rootOwnerAndTokenIdToApprovedAddress[
+            rootOwner
+        ][_tokenId];
+        require(
+            rootOwner == msg.sender ||
+                tokenOwnerToOperators[rootOwner][msg.sender] ||
+                approvedAddress == msg.sender
+        );
         // clear approval
         if (approvedAddress != address(0)) {
             delete rootOwnerAndTokenIdToApprovedAddress[rootOwner][_tokenId];
@@ -501,38 +507,68 @@ function transferAsChild(address _fromContract, uint256 _fromTokenId, address _t
         parentToChildTokenIds[_toContract][_toTokenId].push(_tokenId);
         tokenIdToChildTokenIdsIndex[_tokenId] = index;
 
-        require(ERC721(_toContract).ownerOf(_toTokenId) != address(0), "_toTokenId does not exist");
+        require(
+            ERC721(_toContract).ownerOf(_toTokenId) != address(0),
+            "_toTokenId does not exist"
+        );
 
         emit Transfer(_fromContract, _toContract, _tokenId);
-        emit TransferFromParent(_fromContract, _fromTokenId, _tokenId);
-        emit TransferToParent(_toContract, _toTokenId, _tokenId);
-
+        emit ChildTransferedToParent(_toContract, _toTokenId, _tokenId);
     }
 
     /**
-     * 
+     * @dev transfers an NFT to a EOA or Contract.  cannot transfer to or from another NFT
+     *@param _from: 
+     *@param _to: 
+     @param _tokenId:
      */
-    function _transferFrom(address _from, address _to, uint256 _tokenId) internal {
+    function _transferFrom(
+        address _from,
+        address _to,
+        uint256 _tokenId
+    ) internal {
         require(_from != address(0));
         require(tokenIdToTokenOwner[_tokenId].tokenOwner == _from);
-        require(tokenIdToTokenOwner[_tokenId].parentTokenId == 0, "Cannot transfer from address when owned by a token.");
+        require(
+            tokenIdToTokenOwner[_tokenId].parentTokenId == 0,
+            "Cannot transfer from address when owned by a token."
+        );
         require(_to != address(0));
-        address approvedAddress = rootOwnerAndTokenIdToApprovedAddress[_from][_tokenId];
-        if(msg.sender != _from) {
+        address approvedAddress = rootOwnerAndTokenIdToApprovedAddress[_from][
+            _tokenId
+        ];
+        if (msg.sender != _from) {
             bytes32 rootOwner;
             bool callSuccess;
             // 0xed81cdda == rootOwnerOfChild(address,uint256)
-            bytes memory _calldata = abi.encodeWithSelector(0xed81cdda, address(this), _tokenId);
+            bytes memory _calldata = abi.encodeWithSelector(
+                0xed81cdda,
+                address(this),
+                _tokenId
+            );
             assembly {
-                callSuccess := staticcall(gas(), _from, add(_calldata, 0x20), mload(_calldata), _calldata, 0x20)
+                callSuccess := staticcall(
+                    gas(),
+                    _from,
+                    add(_calldata, 0x20),
+                    mload(_calldata),
+                    _calldata,
+                    0x20
+                )
                 if callSuccess {
-                    rootOwner := mload(calldata)
+                    rootOwner := mload(_calldata)
                 }
             }
-            if(callSuccess == true) {
-                require(rootOwner >> 224 != ERC998_MAGIC_VALUE, "Token is child of other top down composable");
+            if (callSuccess == true) {
+                require(
+                    rootOwner >> 224 != ERC998_MAGIC_VALUE,
+                    "Token is child of other top down composable"
+                );
             }
-            require(tokenOwnerToOperators[_from][msg.sender] || approvedAddress == msg.sender);
+            require(
+                tokenOwnerToOperators[_from][msg.sender] ||
+                    approvedAddress == msg.sender
+            );
         }
 
         // clear approval
@@ -549,37 +585,65 @@ function transferAsChild(address _fromContract, uint256 _fromTokenId, address _t
             tokenOwnerToTokenCount[_to]++;
         }
         emit Transfer(_from, _to, _tokenId);
-
     }
 
-    function transferFrom(address _from, address _to, uint256 _tokenId) external {
+    /**
+     * @dev override of openzeppelin transferFrom
+     */
+    function transferFrom(
+        address _from,
+        address _to,
+        uint256 _tokenId
+    ) public override(ERC721, IERC721) {
         _transferFrom(_from, _to, _tokenId);
     }
 
-    function safeTransferFrom(address _from, address _to, uint256 _tokenId) external {
+    /**
+     * @dev override of openzeppelin safeTransferFrom
+     */
+    function safeTransferFrom(
+        address _from,
+        address _to,
+        uint256 _tokenId
+    ) public override(ERC721, IERC721) {
         _transferFrom(_from, _to, _tokenId);
-        if (isContract(_to)) {
-            bytes4 retval = ERC721TokenReceiver(_to).onERC721Received(msg.sender, _from, _tokenId, "");
-            require(retval == ERC721_RECEIVED);
-        }
     }
 
-    function safeTransferFrom(address _from, address _to, uint256 _tokenId, bytes _data) external {
-        _transferFrom(_from, _to, _tokenId);
-        if (isContract(_to)) {
-            bytes4 retval = ERC721TokenReceiver(_to).onERC721Received(msg.sender, _from, _tokenId, _data);
-            require(retval == ERC721_RECEIVED);
-        }
-    }
+    // function safeTransferFrom(
+    //     address _from,
+    //     address _to,
+    //     uint256 _tokenId,
+    //     bytes _data
+    // ) external override {
+    //     _transferFrom(_from, _to, _tokenId);
+    //     if (isContract(_to)) {
+    //       require(_checkOnERC721Received(_from, _to, _tokenId, ""), "ERC721: transfer to non ERC721Receiver implementer");
+    //     }
+    // }
 
-    function totalChildTokens(address _parentContract, uint256 _parentTokenId) public view returns (uint256) {
+    function totalChildTokens(
+        address _parentContract,
+        uint256 _parentTokenId
+    ) public view returns (uint256) {
         return parentToChildTokenIds[_parentContract][_parentTokenId].length;
     }
 
-    function childTokenByIndex(address _parentContract, uint256 _parentTokenId, uint256 _index) public view returns (uint256) {
-        require(parentToChildTokenIds[_parentContract][_parentTokenId].length > _index);
+    function childTokenByIndex(
+        address _parentContract,
+        uint256 _parentTokenId,
+        uint256 _index
+    ) public view returns (uint256) {
+        require(
+            parentToChildTokenIds[_parentContract][_parentTokenId].length >
+                _index
+        );
         return parentToChildTokenIds[_parentContract][_parentTokenId][_index];
     }
 
+    function onERC721Received(
+        address operator,
+        address from,
+        uint256 tokenId,
+        bytes calldata data
+    ) external override returns (bytes4) {}
 }
-
